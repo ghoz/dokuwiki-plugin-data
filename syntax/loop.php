@@ -2,12 +2,13 @@
 /**
  *
  * @license    GPL 2 (http://www.gnu.org/licenses/gpl.html)
+ * @author     Martyn Eggleton <martyn@access-space.org> for access-space
  * @author     Andreas Gohr <andi@splitbrain.org>
  */
 // must be run within Dokuwiki
 if(!defined('DOKU_INC')) die();
 
-class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
+class syntax_plugin_data_loop extends DokuWiki_Syntax_Plugin {
 
     /**
      * will hold the data helper plugin
@@ -17,7 +18,7 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
     /**
      * Constructor. Load helper plugin
      */
-    function syntax_plugin_data_table(){
+    function syntax_plugin_data_loop(){
         $this->dthlp =& plugin_load('helper', 'data');
     }
 
@@ -25,6 +26,7 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
      * What kind of syntax are we?
      */
     function getType(){
+        return 'container';
         return 'substition';
     }
 
@@ -46,7 +48,7 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
      * Connect pattern to lexer
      */
     function connectTo($mode) {
-        $this->Lexer->addSpecialPattern('----+ *datatable(?: [ a-zA-Z0-9_]*)?-+\n.*?\n----+',$mode,'plugin_data_table');
+        $this->Lexer->addSpecialPattern('----+ *dataloop(?: [ a-zA-Z0-9_]*)?-+\n.*?\n----+',$mode,'plugin_data_loop');
     }
 
 
@@ -68,9 +70,9 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
         $class = preg_replace('/^----+ *data[a-z]+/','',$class);
         $class = trim($class,'- ');
 
-        $data = array('classes' => $class,
-                      'limit'   => 0,
-                      'headers' => array());
+        $data = array();
+        $data['classes'] = $class;
+        //$data['limit'] = 1000;
 
         // parse info
         foreach ( $lines as $line ) {
@@ -144,11 +146,49 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
                 case 'target':
                         $data['page'] = cleanID($line[1]);
                     break;
+                    
+                case 'looptemplate':
+                      $data['looptemplate'] = cleanID($line[1]);
+                  break;
                 default:
                     msg("data plugin: unknown option '".hsc($line[0])."'",-1);
             }
         }
-
+        
+        $sFile = wikiFN($data['looptemplate']);
+        if(!@file_exists($sFile))
+        {
+          
+          $perm = auth_quickaclcheck($data['looptemplate']);
+          $sCreate = '';
+          $w = is_writable($sFile);
+          if ($perm >= AUTH_EDIT) {
+         
+            $sCreate = ': <a href="'.wl($data['looptemplate'],array('do'=>'edit')).
+                                '" title="'.'Create the template'.
+                                '" class="" tagret="_blank">'.'Create the template'.'</a>'; 
+          }
+          msg('data plugin: looptemplate missing'.$sCreate,-1);
+        }
+        
+        $sTpl = io_readFile($sFile);
+        
+        $aMatches = array();
+        preg_match_all('/@@([^@]+)@@/', $sTpl, $aMatches);
+        
+        foreach($aMatches[1] as $iKey => $col)
+        {
+            $col = trim($col);
+            if(!$col) continue;
+            $column = $this->dthlp->_column($col);
+            $column['markup'] = $aMatches[0][$iKey];
+            $data['cols'][$column['key']] = $column;
+            //$sTpl = str_replace($aMatches[0][$iKey], $iKey, $sTpl);
+        }
+  
+        $data['tpl'] = $sTpl;
+        
+        //TODO get these out of the pagetemplate automatically\
         // we need at least one column to display
         if(!is_array($data['cols']) || !count($data['cols'])){
             msg('data plugin: no columns selected',-1);
@@ -167,155 +207,121 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
         return $data;
     }
 
-    protected $before_item = '<tr>';
-    protected $after_item  = '</tr>';
-    protected $before_val  = '<td>';
-    protected $after_val   = '</td>';
-
     /**
      * Create output
      */
-    function render($format, &$R, $data) {
-        if($format != 'xhtml') return false;
-        if(is_null($data)) return false;
-        $R->info['cache'] = false;
-
-        $sqlite = $this->dthlp->_getDB();
-        if(!$sqlite) return false;
-
-        #dbg($data);
-        $sql = $this->_buildSQL($data); // handles request params, too
-        #dbg($sql);
-
-        // run query
-        $clist = array_keys($data['cols']);
-        $res = $sqlite->query($sql);
-
-        $cnt = 0;
-        $rows = array();
-        while ($row = $sqlite->res_fetch_array($res)) {
-            $rows[] = $row;
-            $cnt++;
-            if($data['limit'] && ($cnt == $data['limit'])) break; // keep an eye on the limit
-        }
-
-        if ($cnt === 0) {
-            $this->nullList($data, $clist, $R);
-            return true;
-        }
-
-        $R->doc .= $this->preList($clist, $data);
-        foreach ($rows as $row) {
-            // build data rows
-            $R->doc .= $this->before_item;
-            foreach($row as $num => $cval){
-                $R->doc .= $this->before_val;
-                $R->doc .= $this->dthlp->_formatData(
-                                $data['cols'][$clist[$num]],
-                                $cval,$R);
-                $R->doc .= $this->after_val;
-            }
-            $R->doc .= $this->after_item;
-        }
-        $R->doc .= $this->postList($data);
-
+    function render($format, &$R, $data)
+    {
+      $R->nocache();
+      global $ID;
+      if($format == 'metadata')
+      {
+        $R->meta['relation']['haspart'][$data['looptemplate']] = true;
         return true;
-    }
+      }
+      
+      if(is_null($data)) return false;
+      
+      $sqlite = $this->dthlp->_getDB();
+      if(!$sqlite) return false;
 
-    function preList($clist, $data) {
-        global $ID;
-        // build table
-        $text = '<div class="table dataaggregation">'
-              . '<table class="inline dataplugin_table '.$data['classes'].'">';
-        // build column headers
-        $text .= '<tr>';
-        foreach($data['headers'] as $num => $head){
-            $ckey = $clist[$num];
+      #dbg($data);
+      $sql = $this->_buildSQL($data); // handles request params, too
+      #dbg($sql);
 
-            $text .= '<th>';
-
-            // add sort arrow
-            if(isset($data['sort']) && $ckey == $data['sort'][0]){
-                if($data['sort'][1] == 'ASC'){
-                    $text .= '<span>&darr;</span> ';
-                    $ckey = '^'.$ckey;
-                }else{
-                    $text .= '<span>&uarr;</span> ';
-                }
+      // run query
+      $clist = array_keys($data['cols']);
+      $res = $sqlite->query($sql);
+      
+      // build loop
+      $R->doc .= '<div class="inline dataplugin_loop '.$data['classes'].'">';
+      
+      $sOrg = $data['tpl']; 
+      // build data rows
+      $cnt = 0;
+      while ($row = $sqlite->res_fetch_array($res))
+      {
+      
+        $sChunk = $sOrg;
+        foreach($row as $num => $cval)
+        {
+          $sMarkup = $data['cols'][$clist[$num]]['markup'];
+          $vals = explode("\n", $cval);
+          $outs = array();
+          foreach($vals as $val)
+          {
+            $val = trim($val);
+            if($val=='')
+            {
+              continue;
             }
-
-            // keep url params
-            $params = $this->dthlp->_a2ua('dataflt',$_REQUEST['dataflt']);
-            $params['datasrt'] = $ckey;
-            $params['dataofs'] = $_REQUEST['dataofs'];
-
-            // clickable header
-            $text .= '<a href="'.wl($ID,$params).
-                       '" title="'.$this->getLang('sort').'">'.hsc($head).'</a>';
-
-            $text .= '</th>';
+            $outs[] = $val;// hsc($val);
+          }
+          $sValCommaed = join(', ',$outs);
+          $sChunk = str_replace($sMarkup, $sValCommaed, $sChunk);
+ 
+          // TODO : add different verision that uses an HTML template and the code below to insert html
         }
-        $text .= '</tr>';
-        return $text;
-    }
+        $aInstructions = p_get_instructions($sChunk);
+        $sXHTML = p_render($format, $aInstructions, $R->info);
+        //$R->doc .= '<div class="dataplugin_loop_item">';
+        $R->doc .= $sXHTML;
+        //$R->doc .= '</div>';
+        $cnt++;
+        if($data['limit'] && ($cnt == $data['limit'])) break; // keep an eye on the limit
+      }
 
-    function nullList($data, $clist, &$R) {
-        $R->doc .= $this->preList($clist, $data);
-        $R->tablerow_open();
-        $R->tablecell_open(count($clist), 'center');
-        $R->cdata($this->getLang('none'));
-        $R->tablecell_close();
-        $R->tablerow_close();
-        $R->doc .= '</table></div>';
-    }
+      // if limit was set, add control
+      if($data['limit']){
+          $R->doc .= '<div>';
+          $offset = (int) $_REQUEST['dataofs'];
+          if($offset){
+              $prev = $offset - $data['limit'];
+              if($prev < 0) $prev = 0;
 
-    function postList( $data) {
-        global $ID;
-        $text = '';
-        // if limit was set, add control
-        if($data['limit']){
-            $text .= '<tr><th colspan="'.count($data['cols']).'">';
-            $offset = (int) $_REQUEST['dataofs'];
-            if($offset){
-                $prev = $offset - $data['limit'];
-                if($prev < 0) $prev = 0;
+              // keep url params
+              $params = $this->dthlp->_a2ua('dataflt',$_REQUEST['dataflt']);
+              $params['datasrt'] = $_REQUEST['datasrt'];
+              $params['dataofs'] = $prev;
 
-                // keep url params
-                $params = $this->dthlp->_a2ua('dataflt',$_REQUEST['dataflt']);
-                $params['datasrt'] = $_REQUEST['datasrt'];
-                $params['dataofs'] = $prev;
+              $R->doc .= '<a href="'.wl($ID,$params).
+                            '" title="'.$this->getLang('prev').
+                            '" class="prev">'.$this->getLang('prev').'</a>';
+          }
 
-                $text .= '<a href="'.wl($ID,$params).
-                              '" title="'.$this->getLang('prev').
-                              '" class="prev">'.$this->getLang('prev').'</a>';
-            }
+          $R->doc .= '&nbsp;';
 
-            $text .= '&nbsp;';
+          if($sqlite->res2count($res) > $data['limit']){
+              $next = $offset + $data['limit'];
 
-            if($sqlite->res2count($res) > $data['limit']){
-                $next = $offset + $data['limit'];
+              // keep url params
+              $params = $this->dthlp->_a2ua('dataflt',$_REQUEST['dataflt']);
+              $params['datasrt'] = $_REQUEST['datasrt'];
+              $params['dataofs'] = $next;
 
-                // keep url params
-                $params = $this->dthlp->_a2ua('dataflt',$_REQUEST['dataflt']);
-                $params['datasrt'] = $_REQUEST['datasrt'];
-                $params['dataofs'] = $next;
-
-                $text .= '<a href="'.wl($ID,$params).
-                              '" title="'.$this->getLang('next').
-                              '" class="next">'.$this->getLang('next').'</a>';
-            }
-            $text .= '</th></tr>';
-        }
-
-        $text .= '</table></div>';
-        return $text;
+              $R->doc .= '<a href="'.wl($ID,$params).
+                            '" title="'.$this->getLang('next').
+                            '" class="next">'.$this->getLang('next').'</a>';
+          }
+          $R->doc .= '</div>';
+      }
+      
+      $perm = auth_quickaclcheck($data['looptemplate']);
+      if (($perm >= AUTH_EDIT) && (is_writable(wikiFN($data['looptemplate'])))) {
+     
+        $R->doc .= '<div class="inline dataplugin_loop_edit_link"><a href="'.wl($data['looptemplate'],array('do'=>'edit')).
+                            '" title="'.'Edit the loop above'.
+                            '" class="">'.'Edit the loop above'.'</a></div>'; 
+      }
+      $R->doc .= '</div>';
+      
+      return true;
     }
 
     /**
      * Builds the SQL query from the given data
      */
     function _buildSQL(&$data){
-      
         $sqlite = $this->dthlp->_getDB();
         if(!$sqlite) return false;
         
@@ -327,7 +333,7 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
         $order  = '';
 
         // take overrides from HTTP request params into account
-        if(isset($_REQUEST['datasrt'])){
+        if($_REQUEST['datasrt']){
             if($_REQUEST['datasrt']{0} == '^'){
                 $data['sort'] = array(substr($_REQUEST['datasrt'],1),'DESC');
             }else{
@@ -347,14 +353,12 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
             }elseif($key == '%title%'){
                 $select[] = "pages.page || '|' || pages.title";
             }else{
-                if(!isset($tables[$key])){
+                if(!$tables[$key]){
                     $tables[$key] = 'T'.(++$cnt);
                     $from  .= ' LEFT JOIN data AS '.$tables[$key].' ON '.$tables[$key].'.pid = pages.pid';
-                    $from  .= ' AND '.$tables[$key].".key = '".$sqlite->escape_string($key)."'";
+                    $from  .= ' AND '.$tables[$key].".key = '".$sqlite->escape_string($key)."'\n";
                 }
-                $type = $col['type'];
-                if (is_array($type)) $type = $type['type'];
-                switch ($type) {
+                switch ($col['type']) {
                 case 'pageid':
                     $select[] = "pages.page || '|' || group_concat(".$tables[$key].".value,'\n')";
                     $col['type'] = 'title';
@@ -371,21 +375,30 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
         unset($col);
 
         // prepare sorting
-        if(isset($data['sort'])){
+        if($data['sort'][0]){
             $col = $data['sort'][0];
 
             if($col == '%pageid%'){
                 $order = 'ORDER BY pages.page '.$data['sort'][1];
-            }elseif($col == '%class%'){
+            }elseif($col == '%class%'){ 
                 $order = 'ORDER BY pages.class '.$data['sort'][1];
             }elseif($col == '%title%'){
                 $order = 'ORDER BY pages.title '.$data['sort'][1];
+            }elseif($col == '%pseudo%'){
+              $iNow = time();
+              if(isset($_REQUEST['dayadd']))
+              {
+                $iNow = $iNow + 24 * 60 * 60 * $_REQUEST['dayadd'];
+              }
+              $day = (int) date('j', $iNow);
+              $order = 'ORDER BY substr(pages.page, round(length(pages.page) / 2) + ('.($day).
+                       ' % round(length(pages.page) / 2)), 3) '.$data['sort'][1];
             }else{
                 // sort by hidden column?
                 if(!$tables[$col]){
                     $tables[$col] = 'T'.(++$cnt);
                     $from  .= ' LEFT JOIN data AS '.$tables[$col].' ON '.$tables[$col].'.pid = pages.pid';
-                    $from  .= ' AND '.$tables[$col].".key = '".$sqlite->escape_string($col)."'";
+                    $from  .= ' AND '.$tables[$col].".key = '".$sqlite->escape_string($col)."'\n";
                 }
 
                 $order = 'ORDER BY '.$tables[$col].'.value '.$data['sort'][1];
@@ -395,15 +408,13 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
         }
 
         // add request filters
-        if (!isset($data['filter'])) $data['filter'] = array();
         $data['filter'] = array_merge($data['filter'], $this->dthlp->_get_filters());
-        $orginal_tables = $tables;
+        $orginal_tables = $tables; //take a copy so that all filters need hidden columns generate new ones
         // prepare filters
         if(is_array($data['filter']) && count($data['filter'])){
 
             foreach($data['filter'] as $filter){
                 $col = $filter['key'];
-
                 if($col == '%pageid%'){
                     $where .= " ".$filter['logic']." pages.page ".$filter['compare']." '".$filter['value']."'";
                 }elseif($col == '%class%'){
@@ -412,15 +423,14 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
                     $where .= " ".$filter['logic']." pages.title ".$filter['compare']." '".$filter['value']."'";
                 }else{
                     // filter by hidden column?
-                    if(!$orginal_tables[$col]){
+                   if(!$orginal_tables[$col]){
                         $tables[$col] = 'T'.(++$cnt);
                         $from  .= ' LEFT JOIN data AS '.$tables[$col].' ON '.$tables[$col].'.pid = pages.pid';
-                        $from  .= ' AND '.$tables[$col].".key = '".$sqlite->escape_string($col)."'";
+                        $from  .= ' AND '.$tables[$col].".key = '".$sqlite->escape_string($col)."'\n";
                     }
 
                     $where .= ' '.$filter['logic'].' '.$tables[$col].'.value '.$filter['compare'].
                               " '".$filter['value']."'"; //value is already escaped
-                    unset($orginal_tables[$col]);
                 }
             }
         }
@@ -440,8 +450,8 @@ class syntax_plugin_data_table extends DokuWiki_Syntax_Plugin {
                 $sql .= ' OFFSET '.((int) $_REQUEST['dataofs']);
             }
         }
-
         return $sql;
+        
     }
 
 }

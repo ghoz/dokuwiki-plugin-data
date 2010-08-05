@@ -129,7 +129,7 @@ class helper_plugin_data extends DokuWiki_Plugin {
                     break;
                 case 'tag':
                     #FIXME handle pre/postfix
-                    $outs[] = '<a href="'.wl(str_replace('/',':',cleanID($column['key'])),array('dataflt'=>$column['key'].':'.$val )).
+                    $outs[] = '<a href="'.wl(str_replace('/',':',cleanID($column['key'])),array('dataflt'=>$column['key'].'='.$val )).
                               '" title="'.sprintf($this->getLang('tagfilter'),hsc($val)).
                               '" class="wikilink1">'.hsc($val).'</a>';
                     break;
@@ -219,7 +219,7 @@ class helper_plugin_data extends DokuWiki_Plugin {
      * @return mixed - array on success, false on error
      */
     function _parse_filter($filterline){
-        if(preg_match('/^(.*?)(=|<|>|<=|>=|<>|!=|=~|~|!~)(.*)$/',$filterline,$matches)){
+        if(preg_match('/^(.*?)(<=|>=|<>|!=|=~|!~|<|>|~|=)(.*)$/',$filterline,$matches)){
             $column = $this->_column(trim($matches[1]));
 
             $com = $matches[2];
@@ -244,7 +244,15 @@ class helper_plugin_data extends DokuWiki_Plugin {
                 // Clean if there are no asterisks I could kill
                 $val = $this->_cleanData($val, $column['type']);
             }
-            $val = sqlite_escape_string($val); //pre escape
+            
+            //this is an efficinecy only used in this function to try to speed it up.
+            if(!$this->sqlite)
+            {
+              $this->sqlite = $this->_getDB();
+            }
+
+            if(!$this->sqlite) return;
+            $val = $this->sqlite->escape_string($val); //pre escape
 
             return array('key'     => $column['key'],
                          'value'   => $val,
@@ -279,7 +287,6 @@ class helper_plugin_data extends DokuWiki_Plugin {
                 $filters[] = $f;
             }
         }
-
         return $filters;
     }
 
@@ -293,5 +300,4 @@ class helper_plugin_data extends DokuWiki_Plugin {
         }
         return $urlarray;
     }
-
 }

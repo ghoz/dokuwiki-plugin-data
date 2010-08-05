@@ -93,7 +93,7 @@ class syntax_plugin_data_cloud extends syntax_plugin_data_table {
                     if(!$tables[$col]){
                         $tables[$col] = 'T'.(++$cnt);
                         $from  .= ' LEFT JOIN data AS '.$tables[$col].' ON '.$tables[$col].'.pid = pages.pid';
-                        $from  .= ' AND '.$tables[$col].".key = '".sqlite_escape_string($col)."'";
+                        $from  .= ' AND '.$tables[$col].".key = '".$sqlite->escape_string($col)."'";
                     }
 
                     $where .= ' '.$filter['logic'].' '.$tables[$col].'.value '.$filter['compare'].
@@ -105,7 +105,7 @@ class syntax_plugin_data_cloud extends syntax_plugin_data_table {
         // build query
         $sql = "SELECT data.value, COUNT(data.pid) as cnt
                   FROM data $from
-                 WHERE data.key = '".sqlite_escape_string($ckey)."'
+                 WHERE data.key = '".$sqlite->escape_string($ckey)."'
                  $where
               GROUP BY data.value";
         if($data['min'])   $sql .= ' HAVING cnt >= '.$data['min'];
@@ -117,7 +117,7 @@ class syntax_plugin_data_cloud extends syntax_plugin_data_table {
         $res = $sqlite->query($sql);
         $min = 0;
         $max = 0;
-        while ($row = sqlite_fetch_array($res, SQLITE_NUM)) {
+        while ($row = $sqlite->res_fetch_array($res)) {
             if(!$max) $max  = $row[1];
             $min  = $row[1];
             $tags[$row[0]] = $row[1];
